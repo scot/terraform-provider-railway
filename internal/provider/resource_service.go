@@ -70,6 +70,7 @@ type ServiceResourceModel struct {
 	Id                                 types.String `tfsdk:"id"`
 	Name                               types.String `tfsdk:"name"`
 	ProjectId                          types.String `tfsdk:"project_id"`
+	EnvironmentId                      types.String `tfsdk:"environment_id"`
 	CronSchedule                       types.String `tfsdk:"cron_schedule"`
 	SourceImage                        types.String `tfsdk:"source_image"`
 	SourceImagePrivateRegistryUsername types.String `tfsdk:"source_image_registry_username"`
@@ -109,6 +110,18 @@ func (r *ServiceResource) Schema(ctx context.Context, req resource.SchemaRequest
 				Required:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(uuidRegex(), "must be an id"),
+				},
+			},
+			"environment_id": schema.StringAttribute{
+				MarkdownDescription: "FORK PATCH (github.com/scot/terraform-provider-railway): identifier of the environment to deploy this service's instance settings (source, cron schedule) into. If unset, preserves upstream v0.6.2 behavior — resolves to the project's oldest environment. On import, discovered automatically from the service's existing instances (errors if it has instances in more than one environment — set this attribute explicitly in that case). Changing it forces recreation.",
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(uuidRegex(), "must be an id"),
@@ -341,9 +354,37 @@ func (r *ServiceResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// FORK PATCH (github.com/scot/terraform-provider-railway): resolve the
+	// target environment explicitly instead of always relying on Railway's
+	// default (oldest) project environment. NOTE: passing environmentId to
+	// serviceCreate does not necessarily scope service EXISTENCE to just this
+	// environment (per Railway's own API doc comment, that only applies to
+	// "fork" environments) — what it reliably does is scope the SERVICE
+	// INSTANCE settings (source/cron/start command, set below) to this
+	// environment, which is what actually determines whether the service
+	// does anything. Untested against live Railway API — verify on one
+	// service before trusting this for a bulk creation.
+	var environmentId string
+
+	if !data.EnvironmentId.IsNull() && !data.EnvironmentId.IsUnknown() && data.EnvironmentId.ValueString() != "" {
+		environmentId = data.EnvironmentId.ValueString()
+	} else {
+		_, environment, err := defaultEnvironmentForProject(ctx, *r.client, data.ProjectId.ValueString())
+
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to resolve default environment, got error: %s", err))
+			return
+		}
+
+		environmentId = environment.Id
+	}
+
+	data.EnvironmentId = types.StringValue(environmentId)
+
 	input := ServiceCreateInput{
-		Name:      data.Name.ValueString(),
-		ProjectId: data.ProjectId.ValueString(),
+		Name:          data.Name.ValueString(),
+		ProjectId:     data.ProjectId.ValueString(),
+		EnvironmentId: &environmentId,
 	}
 
 	response, err := createService(ctx, *r.client, input)
@@ -363,7 +404,7 @@ func (r *ServiceResource) Create(ctx context.Context, req resource.CreateRequest
 
 	instanceInput := buildServiceInstanceInput(data, regionsData)
 
-	_, err = updateServiceInstance(ctx, *r.client, data.Id.ValueString(), instanceInput)
+	_, err = updateServiceInstance(ctx, *r.client, data.Id.ValueString(), &environmentId, instanceInput)
 
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create service settings, got error: %s", err))
@@ -515,7 +556,9 @@ func (r *ServiceResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	instanceInput := buildServiceInstanceInput(data, regionsData)
 
-	_, err := updateServiceInstance(ctx, *r.client, data.Id.ValueString(), instanceInput)
+	// FORK PATCH: environment_id has RequiresReplace, so it's unchanged from
+	// state here — safe to pass straight through.
+	_, err := updateServiceInstance(ctx, *r.client, data.Id.ValueString(), data.EnvironmentId.ValueStringPointer(), instanceInput)
 
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update service settings, got error: %s", err))
@@ -734,14 +777,53 @@ func buildServiceInstanceInput(data *ServiceResourceModel, regionsData *[]Servic
 }
 
 func getAndBuildServiceInstance(ctx context.Context, client graphql.Client, projectId string, serviceId string, data *ServiceResourceModel) error {
-	// Read the service again to get the updated source attributes
-	_, environment, err := defaultEnvironmentForProject(ctx, client, projectId)
+	// FORK PATCH (github.com/scot/terraform-provider-railway): resolve which
+	// environment to read instance settings from. If environment_id is
+	// already known (normal plan/apply cycle after this attribute exists in
+	// state), use it — matches Create/Update. Otherwise (e.g. right after
+	// `terraform import <id>`, which only knows the service ID) discover it
+	// from the service's actual instances instead of assuming the project's
+	// default/oldest environment, which would silently pick the wrong one
+	// for a service that was deliberately created in a non-default
+	// environment (the whole reason this fork exists).
+	var environmentId string
 
-	if err != nil {
-		return err
+	if !data.EnvironmentId.IsNull() && !data.EnvironmentId.IsUnknown() && data.EnvironmentId.ValueString() != "" {
+		environmentId = data.EnvironmentId.ValueString()
+	} else {
+		instances, err := getServiceInstances(ctx, client, serviceId)
+
+		if err != nil {
+			return err
+		}
+
+		edges := instances.Service.ServiceInstances.Edges
+
+		if len(edges) == 0 {
+			// No instances anywhere yet — fall back to upstream v0.6.2
+			// behavior so a freshly-created-but-not-yet-instanced service
+			// (shouldn't normally happen post-Create, but matches prior
+			// behavior for safety) doesn't hard-fail.
+			_, environment, err := defaultEnvironmentForProject(ctx, client, projectId)
+
+			if err != nil {
+				return err
+			}
+
+			environmentId = environment.Id
+		} else if len(edges) == 1 {
+			environmentId = edges[0].Node.EnvironmentId
+		} else {
+			return fmt.Errorf(
+				"service %s has instances in %d environments — set environment_id explicitly in config to disambiguate which one this resource should track",
+				serviceId, len(edges),
+			)
+		}
 	}
 
-	response, err := getServiceInstance(ctx, client, environment.Id, serviceId)
+	data.EnvironmentId = types.StringValue(environmentId)
+
+	response, err := getServiceInstance(ctx, client, environmentId, serviceId)
 
 	if err != nil {
 		return err
