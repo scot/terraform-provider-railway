@@ -1234,12 +1234,16 @@ func (v *__updateServiceInput) GetInput() ServiceUpdateInput { return v.Input }
 
 // __updateServiceInstanceInput is used internally by genqlient
 type __updateServiceInstanceInput struct {
-	ServiceId string                     `json:"serviceId"`
-	Input     ServiceInstanceUpdateInput `json:"input"`
+	ServiceId     string                     `json:"serviceId"`
+	Input         ServiceInstanceUpdateInput `json:"input"`
+	EnvironmentId *string                    `json:"environmentId,omitempty"`
 }
 
 // GetServiceId returns __updateServiceInstanceInput.ServiceId, and is useful for accessing the field via an interface.
 func (v *__updateServiceInstanceInput) GetServiceId() string { return v.ServiceId }
+
+// GetEnvironmentId returns __updateServiceInstanceInput.EnvironmentId, and is useful for accessing the field via an interface.
+func (v *__updateServiceInstanceInput) GetEnvironmentId() *string { return v.EnvironmentId }
 
 // GetInput returns __updateServiceInstanceInput.Input, and is useful for accessing the field via an interface.
 func (v *__updateServiceInstanceInput) GetInput() ServiceInstanceUpdateInput { return v.Input }
@@ -4704,18 +4708,20 @@ func updateServiceInstance(
 	ctx context.Context,
 	client graphql.Client,
 	serviceId string,
+	environmentId *string,
 	input ServiceInstanceUpdateInput,
 ) (*updateServiceInstanceResponse, error) {
 	req := &graphql.Request{
 		OpName: "updateServiceInstance",
 		Query: `
-mutation updateServiceInstance ($serviceId: String!, $input: ServiceInstanceUpdateInput!) {
-	serviceInstanceUpdate(environmentId: null, input: $input, serviceId: $serviceId)
+mutation updateServiceInstance ($serviceId: String!, $input: ServiceInstanceUpdateInput!, $environmentId: String) {
+	serviceInstanceUpdate(environmentId: $environmentId, input: $input, serviceId: $serviceId)
 }
 `,
 		Variables: &__updateServiceInstanceInput{
-			ServiceId: serviceId,
-			Input:     input,
+			ServiceId:     serviceId,
+			Input:         input,
+			EnvironmentId: environmentId,
 		},
 	}
 	var err error

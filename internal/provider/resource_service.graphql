@@ -94,12 +94,18 @@ query getServiceInstances(
 # @genqlient(for: "ServiceInstanceUpdateInput.restartPolicyType", omitempty: true, pointer: true)
 # @genqlient(for: "ServiceInstanceUpdateInput.restartPolicyMaxRetries", omitempty: true, pointer: true)
 # @genqlient(for: "ServiceInstanceUpdateInput.sleepApplication", omitempty: true, pointer: true)
+# FORK PATCH (github.com/scot/terraform-provider-railway): environmentId is now
+# a variable instead of hardcoded null, so instance settings (source, cron,
+# start command) can target a specific environment instead of always the
+# project's oldest/default one. See resource_service.go's environment_id
+# attribute and README-FORK-PATCH.md for why.
 mutation updateServiceInstance(
   $serviceId: String!
   $input: ServiceInstanceUpdateInput!
+  $environmentId: String
 ) {
   serviceInstanceUpdate(
-    environmentId: null
+    environmentId: $environmentId
     input: $input
     serviceId: $serviceId
   )
