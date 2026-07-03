@@ -849,7 +849,7 @@ func getAndBuildServiceInstance(ctx context.Context, client graphql.Client, proj
 		if response.ServiceInstance.Source.Repo != nil {
 			data.SourceRepo = types.StringValue(*response.ServiceInstance.Source.Repo)
 
-			triggersResponse, err := listDeploymentTriggers(ctx, client, projectId, environment.Id, serviceId)
+			triggersResponse, err := listDeploymentTriggers(ctx, client, projectId, environmentId, serviceId)
 
 			if err != nil {
 				return err
