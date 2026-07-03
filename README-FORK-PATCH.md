@@ -34,6 +34,13 @@ Full diff: compare this branch against upstream `master`. Summary:
   `environment_id` explicitly to disambiguate.
 - `Update()`: passes the (immutable, `RequiresReplace`) stored `environment_id` through
   to `updateServiceInstance`.
+- `ImportState()`: accepts an optional composite import ID
+  `"<service_id>:<environment_id>"` (in addition to a plain `<service_id>`), seeding
+  `environment_id` directly into state at import time instead of relying on
+  `getAndBuildServiceInstance`'s discovery — needed for any pre-existing service that
+  already has instances in more than one environment (discovered empirically: an
+  already-imported service can have this even without ever being created fresh via
+  this fork), where discovery would otherwise error asking you to disambiguate.
 
 No `.graphql` schema regeneration was run — `ServiceCreateInput.EnvironmentId` already
 existed in generated code (upstream just never set it), and the `updateServiceInstance`

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -729,7 +730,21 @@ func (r *ServiceResource) Delete(ctx context.Context, req resource.DeleteRequest
 }
 
 func (r *ServiceResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	// FORK PATCH (github.com/scot/terraform-provider-railway): supports an
+	// optional composite import ID "<service_id>:<environment_id>" so state
+	// is seeded with environment_id directly at import time, bypassing the
+	// getServiceInstances discovery that getAndBuildServiceInstance's
+	// subsequent Read() would otherwise run — which errors out if the
+	// service has instances in more than one environment. Plain
+	// "<service_id>" (no colon) still works exactly as before, for services
+	// with exactly one instance.
+	parts := strings.SplitN(req.ID, ":", 2)
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[0])...)
+
+	if len(parts) == 2 {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("environment_id"), parts[1])...)
+	}
 }
 
 func buildServiceInstanceInput(data *ServiceResourceModel, regionsData *[]ServiceResourceRegionModel) ServiceInstanceUpdateInput {
